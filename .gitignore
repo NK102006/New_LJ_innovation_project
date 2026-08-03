@@ -1,0 +1,25 @@
+# Python virtual environment
+Include/
+Lib/
+Scripts/
+share/
+pyvenv.cfg
+
+# Databases
+*.db
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environment configurations
+.env
+
+# Zipped archive files
+static.zip
+templates.zip
+
+# Temporary visual assets / testing files
+a.jpeg
+a2.31 PM

@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Face Login - Smart Attendance</title>
+    <meta charset="UTF-8">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+    <style>
+        *{ margin:0; padding:0; box-sizing:border-box; }
+
+        body{
+            font-family:'Segoe UI', Arial, sans-serif;
+            background: linear-gradient(-45deg,#667eea,#764ba2,#f093fb,#f5576c);
+            background-size:400% 400%;
+            animation: gradientShift 15s ease infinite;
+            min-height:100vh;
+            display:flex;
+            align-items:center;
+            justify-content:center;
+        }
+
+        @keyframes gradientShift{
+            0%{background-position:0% 50%;}
+            50%{background-position:100% 50%;}
+            100%{background-position:0% 50%;}
+        }
+
+        .login-card{
+            background:white;
+            padding:2rem;
+            border-radius:20px;
+            box-shadow:0 20px 40px rgba(0,0,0,0.12);
+            width:100%;
+            max-width:420px;
+            position:relative;
+        }
+
+        h2{
+            text-align:center;
+            color:#333;
+            margin-bottom:1.5rem;
+        }
+
+        .tabs{
+            display:flex;
+            gap:1rem;
+            margin-bottom:1.5rem;
+        }
+
+        .tab-btn{
+            flex:1;
+            padding:12px;
+            border:none;
+            border-radius:12px;
+            font-size:16px;
+            font-weight:600;
+            cursor:pointer;
+            background:#e1e5e9;
+            color:#666;
+            transition:all .3s ease;
+        }
+
+        .tab-btn.active{
+            background:linear-gradient(135deg,#8747c7,#3d1764);
+            color:white;
+        }
+
+        .form-container{
+            display:none;
+        }
+
+        .form-container.active{
+            display:block;
+        }
+
+        input{
+            width:100%;
+            padding:15px;
+            border:2px solid #e1e5e9;
+            border-radius:12px;
+            font-size:16px;
+            margin-bottom:1rem;
+            transition:all .3s ease;
+        }
+
+        input:focus{
+            outline:none;
+            border-color:#8747c7;
+        }
+
+        .webcam-section{
+            margin:1rem 0;
+            text-align:center;
+        }
+
+        .webcam-container{
+            position:relative;
+            width:100%;
+            max-width:300px;
+            margin:0 auto;
+            border-radius:15px;
+            overflow:hidden;
+            background:#000;
+        }
+
+        #webcam, #capturePreview{
+            width:100%;
+            height:250px;
+            object-fit:cover;
+        }
+
+        #capturePreview{
+            display:none;
+        }
+
+        .capture-btn{
+            margin-top:10px;
+            padding:12px 24px;
+            background:linear-gradient(135deg,#28a745,#20c997);
+            color:white;
+            border:none;
+            border-radius:12px;
+            font-size:16px;
+            cursor:pointer;
+        }
+
+        .submit-btn{
+            width:100%;
+            padding:15px;
+            background:linear-gradient(135deg,#8747c7,#3d1764);
+            color:white;
+            border:none;
+            border-radius:12px;
+            font-size:16px;
+            cursor:pointer;
+            position:relative;
+            overflow:hidden;
+        }
+
+        .shine{
+            position:absolute;
+            top:0;
+            left:-150%;
+            width:60%;
+            height:100%;
+            background:linear-gradient(120deg,transparent,rgba(255,255,255,0.35),transparent);
+            transform:skewX(-25deg);
+            pointer-events:none;
+        }
+
+        button:disabled{
+            opacity:.6;
+            cursor:not-allowed;
+        }
+
+        .message{
+            padding:12px;
+            border-radius:8px;
+            margin:1rem 0;
+            font-weight:500;
+        }
+
+        .error{ background:#fee; color:#c33; border-left:4px solid #c33; }
+        .success{ background:#efe; color:#272; border-left:4px solid #272; }
+        .warning{ background:#ffedcc; color:#996600; border-left:4px solid #996600; }
+
+        .face-status{
+            margin-top:10px;
+            font-size:14px;
+            color:#666;
+        }
+
+        .face-status.detected{ color:#28a745; }
+        .face-status.not-detected{ color:#dc3545; }
+    </style>
+</head>
+<body>
+
+<div class="login-card">
+    <h2>🔐 Face Login</h2>
+
+    <div class="tabs">
+        <button class="tab-btn active" onclick="switchTab('signup')">📝 Sign Up</button>
+        <button class="tab-btn" onclick="switchTab('signin')">🔑 Sign In</button>
+    </div>
+
+    <!-- Sign Up Form -->
+    <div class="form-container active" id="signupForm">
+        <form id="signupFormData">
+            <input type="text" id="username" name="username" placeholder="👤 Enter username" required>
+            <input type="email" id="email" name="email" placeholder="📧 Enter email" required>
+            <input type="password" id="password" name="password" placeholder="🔒 Enter password" required>
+
+            <div class="webcam-section">
+                <p style="margin-bottom:10px;color:#666;">📸 Capture your face for registration</p>
+                <div class="webcam-container">
+                    <video id="webcam" autoplay playsinline></video>
+                    <canvas id="capturePreview" style="display:none;"></canvas>
+                </div>
+                <div class="face-status" id="signupFaceStatus">No face detected</div>
+                <button type="button" class="capture-btn" onclick="captureFace('signup')">📷 Capture Face</button>
+                <input type="hidden" id="signupFaceData" name="face_data">
+            </div>
+
+            <button type="submit" class="submit-btn" id="signupBtn">
+                <span class="shine"></span>
+                ✅ Sign Up
+            </button>
+        </form>
+    </div>
+
+    <!-- Sign In Form -->
+    <div class="form-container" id="signinForm">
+        <form id="signinFormData">
+            <input type="text" id="loginUsername" name="username" placeholder="👤 Enter username" required>
+
+            <div class="webcam-section">
+                <p style="margin-bottom:10px;color:#666;">📸 Look at the camera for verification</p>
+                <div class="webcam-container">
+                    <video id="signinWebcam" autoplay playsinline></video>
+                </div>
+                <div class="face-status" id="signinFaceStatus">No face detected</div>
+                <button type="button" class="capture-btn" onclick="captureFace('signin')">📷 Capture & Verify</button>
+                <input type="hidden" id="signinFaceData" name="face_data">
+            </div>
+
+            <button type="submit" class="submit-btn" id="signinBtn">
+                <span class="shine"></span>
+                🔑 Sign In
+            </button>
+        </form>
+    </div>
+
+    <div id="message"></div>
+</div>
+
+<script>
+let currentStream = null;
+let currentTab = 'signup';
+
+function switchTab(tab){
+    currentTab = tab;
+    document.querySelectorAll('.tab-btn').forEach(btn=>btn.classList.remove('active'));
+    document.querySelectorAll('.form-container').forEach(f=>f.classList.remove('active'));
+
+    if(tab==='signup'){
+        document.querySelector('.tab-btn:first-child').classList.add('active');
+        document.getElementById('signupForm').classList.add('active');
+        startWebcam('webcam');
+    }else{
+        document.querySelector('.tab-btn:last-child').classList.add('active');
+        document.getElementById('signinForm').classList.add('active');
+        startWebcam('signinWebcam');
+    }
+}
+
+async function startWebcam(videoId){
+    const video = document.getElementById(videoId);
+    try{
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+        video.srcObject = stream;
+        currentStream = stream;
+    }catch(err){
+        showMessage('❌ Could not access webcam','error');
+    }
+}
+
+async function captureFace(type){
+    const video = document.getElementById(type==='signup'?'webcam':'signinWebcam');
+    const canvas = document.createElement('canvas');
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(video, 0, 0);
+
+    const faceData = canvas.toDataURL('image/jpeg', 0.8);
+
+    const statusEl = document.getElementById(type==='signup'?'signupFaceStatus':'signinFaceStatus');
+    const hiddenInput = document.getElementById(type==='signup'?'signupFaceData':'signinFaceData');
+
+    showMessage('⏳ Processing face...', 'warning');
+
+    try{
+        const response = await fetch('/detect-face', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ image: faceData })
+        });
+
+        const data = await response.json();
+
+        if(data.detected){
+            if(data.is_ai_generated){
+                showMessage('⚠️ AI-generated face detected! Please use a real photo.', 'error');
+                statusEl.textContent = '❌ AI-generated face detected';
+                statusEl.className = 'face-status not-detected';
+            }else{
+                hiddenInput.value = faceData;
+                statusEl.textContent = '✅ Face captured successfully';
+                statusEl.className = 'face-status detected';
+                showMessage('✅ Face captured!', 'success');
+            }
+        }else{
+            showMessage('❌ No face detected! Please position your face in front of camera.', 'error');
+            statusEl.textContent = '❌ No face detected';
+            statusEl.className = 'face-status not-detected';
+        }
+    }catch(err){
+        showMessage('❌ Error processing face', 'error');
+    }
+}
+
+// Sign Up Form Submit
+document.getElementById('signupFormData').onsubmit = async (e) => {
+    e.preventDefault();
+
+    const username = document.getElementById('username').value.trim();
+    const email = document.getElementById('email').value.trim();
+    const password = document.getElementById('password').value;
+    const faceData = document.getElementById('signupFaceData').value;
+
+    if(!username || !email || !password){
+        showMessage('❌ Please fill all fields', 'error');
+        return;
+    }
+
+    if(!faceData){
+        showMessage('❌ Please capture your face first', 'error');
+        return;
+    }
+
+    const btn = document.getElementById('signupBtn');
+    btn.textContent = '⏳ Creating account...';
+    btn.disabled = true;
+
+    try{
+        const formData = new FormData();
+        formData.append('username', username);
+        formData.append('email', email);
+        formData.append('password', password);
+        formData.append('face_data', faceData);
+
+        const response = await fetch('/signup', {
+            method: 'POST',
+            body: formData
+        });
+
+        const data = await response.json();
+        showMessage(data.message, data.success ? 'success' : 'error');
+
+        if(data.success){
+            setTimeout(()=>{
+                switchTab('signin');
+            },1500);
+        }
+    }catch(err){
+        showMessage('❌ Network error!', 'error');
+    }
+
+    btn.innerHTML = '<span class="shine"></span> ✅ Sign Up';
+    btn.disabled = false;
+};
+
+// Sign In Form Submit
+document.getElementById('signinFormData').onsubmit = async (e) => {
+    e.preventDefault();
+
+    const username = document.getElementById('loginUsername').value.trim();
+    const faceData = document.getElementById('signinFaceData').value;
+
+    if(!username){
+        showMessage('❌ Please enter username', 'error');
+        return;
+    }
+
+    if(!faceData){
+        showMessage('❌ Please capture your face first', 'error');
+        return;
+    }
+
+    const btn = document.getElementById('signinBtn');
+    btn.textContent = '⏳ Verifying...';
+    btn.disabled = true;
+
+    try{
+        const formData = new FormData();
+        formData.append('username', username);
+        formData.append('face_data', faceData);
+
+        const response = await fetch('/signin', {
+            method: 'POST',
+            body: formData
+        });
+
+        const data = await response.json();
+        showMessage(data.message, data.success ? 'success' : 'error');
+
+        if(data.success && data.redirect){
+            setTimeout(()=>{
+                window.location.href = data.redirect;
+            },1500);
+        }
+    }catch(err){
+        showMessage('❌ Network error!', 'error');
+    }
+
+    btn.innerHTML = '<span class="shine"></span> 🔑 Sign In';
+    btn.disabled = false;
+};
+
+function showMessage(text, type){
+    const msgDiv = document.getElementById('message');
+    msgDiv.innerHTML = `<div class="message ${type}">${text}</div>`;
+
+    gsap.from(".message",{
+        y:10,
+        opacity:0,
+        scale:.9,
+        duration:.4,
+        ease:"back.out(2)"
+    });
+}
+
+// Initialize webcam on load
+window.addEventListener('load', () => {
+    startWebcam('webcam');
+    gsap.from(".login-card",{
+        y:80,
+        opacity:0,
+        scale:.9,
+        duration:1,
+        ease:"power3.out"
+    });
+});
+</script>
+
+</body>
+</html>

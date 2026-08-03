@@ -1,0 +1,673 @@
+from flask import Flask, render_template, Response, jsonify, request, session, redirect, url_for
+import os
+import logging
+import sqlite3
+import speech_recognition as sr
+import threading
+import time
+from datetime import datetime, date,timedelta
+import queue
+from flask_socketio import SocketIO, emit
+from groq import Groq
+import numpy as np
+import math
+import random
+import smtplib
+import ssl
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from dotenv import load_dotenv
+import base64
+import io
+from PIL import Image
+import hashlib
+
+load_dotenv()
+groq_api_key = os.environ.get("GROQ_API_KEY")
+if groq_api_key:
+    client = Groq(api_key=groq_api_key)
+else:
+    client = None
+    print("⚠️ WARNING: GROQ_API_KEY environment variable is not set. Chatbot will be disabled.")
+otp_storage = {}
+
+app = Flask(__name__)
+app.secret_key = os.environ.get("FLASK_SECRET_KEY", "your-super-secret-key-change-this")
+app.static_folder = 'static'
+socketio = SocketIO(app, cors_allowed_origins="*")
+
+DB_PATH = 'attendance.db'
+SPEECH_DB_PATH = 'speech.db'
+USERS_DB_PATH = 'users.db'
+
+OTP_SENDER_EMAIL = os.environ.get("OTP_SENDER_EMAIL", "smartwebcam1014@gmail.com")  # Gmail
+OTP_SENDER_PASSWORD = os.environ.get("OTP_SENDER_PASSWORD", "sgnrzfylsoxbtiib")  # Gmail App Password
+
+speech_queue = queue.Queue()
+is_listening = False
+current_speech_text = ""
+recognizer = sr.Recognizer()
+microphone = None
+present_count = 0
+absent_count = 0
+LOCKED_ABSENT = "LOCKED ABSENT"
+
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS attendance
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  userid TEXT NOT NULL,
+                  date TEXT NOT NULL,
+                  status TEXT NOT NULL,
+                  last_updated TEXT NOT NULL,
+                  is_locked INTEGER DEFAULT 0)''')
+    conn.commit()
+    conn.close()
+
+def init_speech_db():
+    conn = sqlite3.connect(SPEECH_DB_PATH)
+    c = conn.cursor()
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS speech_records (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            date TEXT NOT NULL,
+            time TEXT NOT NULL,
+            text_content TEXT NOT NULL
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+def init_users_db():
+    conn = sqlite3.connect(USERS_DB_PATH)
+    c = conn.cursor()
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            email TEXT NOT NULL,
+            face_data TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+def set_attendance(userid, status):
+    today_str = date.today().isoformat()
+    now_str = datetime.now().isoformat(timespec='seconds')
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('SELECT COUNT(*) FROM attendance WHERE userid=? AND status="Absent"', (userid,))
+    total_absent = c.fetchone()[0]
+    c.execute('SELECT id, status, is_locked FROM attendance WHERE userid=? AND date=?', (userid, today_str))
+    row = c.fetchone()
+    if row:
+        record_id, _, is_locked = row
+        if is_locked == 1:
+            conn.close()
+            return False
+        c.execute('UPDATE attendance SET status=?, last_updated=? WHERE id=?', (status, now_str, record_id))
+    else:
+        c.execute('INSERT INTO attendance (userid, date, status, last_updated) VALUES (?, ?, ?, ?)',
+                  (userid, today_str, status, now_str))
+    conn.commit()
+    conn.close()
+    return True
+
+def save_speech_record(user_id, text_content):
+    now = datetime.now()
+    conn = sqlite3.connect(SPEECH_DB_PATH)
+    c = conn.cursor()
+    c.execute("INSERT INTO speech_records (user_id, date, time, text_content) VALUES (?, ?, ?, ?)",
+              (user_id, now.date().isoformat(), now.time().isoformat(timespec='seconds'), text_content))
+    conn.commit()
+    conn.close()
+
+def get_attendance_counts(userid):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('SELECT COUNT(*) FROM attendance WHERE userid=? AND status="Present"', (userid,))
+    present = c.fetchone()[0]
+    c.execute('SELECT COUNT(*) FROM attendance WHERE userid=? AND status="Absent"', (userid,))
+    absent = c.fetchone()[0]
+    c.execute('SELECT COUNT(*) FROM attendance WHERE userid=? AND is_locked=1', (userid,))
+    locked = c.fetchone()[0]
+    conn.close()
+    return present, absent, locked
+
+def send_otp_email(email, otp):
+    try:
+        msg = MIMEMultipart()
+        msg['From'] = OTP_SENDER_EMAIL
+        msg['To'] = email
+        msg['Subject'] = '🔐 Smart Attendance OTP'
+        msg.attach(MIMEText(f'Your OTP is: **{otp}**\n\nExpires in 5 minutes.', 'plain'))
+        
+        context = ssl.create_default_context()
+        with smtplib.SMTP('smtp.gmail.com', 587) as server:
+            server.starttls(context=context)
+            server.login(OTP_SENDER_EMAIL, OTP_SENDER_PASSWORD)
+            server.sendmail(OTP_SENDER_EMAIL, email, msg.as_string())
+        print(f"✅ Email sent!")
+        return True
+    except Exception as e:
+        print(f"❌ Email error: {e}")
+        return False
+
+def generate_otp():
+    """Generate 6-digit random OTP"""
+    return str(random.randint(100000, 999999))
+
+def speech_listener():
+    global is_listening, current_speech_text, microphone
+    recognizer.energy_threshold = 300
+    recognizer.dynamic_energy_threshold = True
+
+    try:
+        microphone = sr.Microphone()
+        print("🎤 Microphone initialized successfully")
+    except Exception as e:
+        print("❌ Mic error:", e)
+        return
+
+    with microphone as source:
+        recognizer.adjust_for_ambient_noise(source, duration=1)
+
+    while True:
+        if is_listening:
+            try:
+                with microphone as source:
+                    print("🎧 Listening...")
+                    audio = recognizer.listen(source, timeout=5, phrase_time_limit=5)
+                text = recognizer.recognize_google(audio)
+                current_speech_text = text
+                save_speech_record("student1", text)
+                print("✅ HEARD:", text)
+            except sr.UnknownValueError:
+                print("🤷 Couldn't understand")
+            except Exception as e:
+                print("Speech error:", e)
+        time.sleep(0.2)
+
+# Initialize databases
+init_db()
+init_speech_db()
+init_users_db()
+
+# Global state (updated via Socket.IO from client)
+face_detected = False
+expression = "neutral"
+gesture = "none"
+current_filter = "normal"
+filters = ["normal", "bw", "red", "blur", "cartoon"]
+CURRENT_USERID=''
+attendance_status = "Absent"
+
+# Routes
+@app.route('/')
+def index():
+    return render_template('front_page.html')
+
+@app.route('/login')
+def login_page():
+    return render_template('login.html')
+
+@app.route('/otp')
+def otp_page():
+    if 'otp_verified' not in session:
+        return render_template('otp_page.html', error="Please enter your email first!")
+    return render_template('otp_page.html')
+
+
+# New Face Login Routes
+@app.route('/detect-face', methods=['POST'])
+def detect_face():
+    try:
+        data = request.get_json()
+        image_data = data.get('image', '')
+
+        if not image_data:
+            return jsonify({'detected': False, 'message': 'No image provided'})
+
+        from ai_detector import detect_ai_face
+
+        result = detect_ai_face(image_data)
+
+        return jsonify({
+            'detected': True,
+            'is_ai_generated': result['is_ai_generated'],
+            'confidence': result['confidence'],
+            'message': 'AI-generated face detected' if result['is_ai_generated'] else 'Real face detected'
+        })
+
+    except Exception as e:
+        print(f"Face detection error: {e}")
+        return jsonify({'detected': False, 'message': str(e)})
+
+
+@app.route('/signup', methods=['POST'])
+def signup():
+    try:
+        username = request.form.get('username')
+        email = request.form.get('email')
+        password = request.form.get('password')
+        face_data = request.form.get('face_data')
+
+        if not all([username, email, password, face_data]):
+            return jsonify({'success': False, 'message': 'All fields are required'})
+
+        password_hash = hashlib.sha256(password.encode()).hexdigest()
+
+        conn = sqlite3.connect(USERS_DB_PATH)
+        c = conn.cursor()
+
+        try:
+            c.execute('INSERT INTO users (username, password_hash, email, face_data) VALUES (?, ?, ?, ?)',
+                     (username, password_hash, email, face_data))
+            conn.commit()
+            conn.close()
+            return jsonify({'success': True, 'message': 'Account created successfully!'})
+        except sqlite3.IntegrityError:
+            conn.close()
+            return jsonify({'success': False, 'message': 'Username already exists!'})
+
+    except Exception as e:
+        print(f"Signup error: {e}")
+        return jsonify({'success': False, 'message': str(e)})
+
+
+@app.route('/signin', methods=['POST'])
+def signin():
+    try:
+        username = request.form.get('username')
+        face_data = request.form.get('face_data')
+
+        if not username or not face_data:
+            return jsonify({'success': False, 'message': 'Username and face capture required'})
+
+        conn = sqlite3.connect(USERS_DB_PATH)
+        c = conn.cursor()
+        c.execute('SELECT id, face_data FROM users WHERE username = ?', (username,))
+        user = c.fetchone()
+        conn.close()
+
+        if not user:
+            return jsonify({'success': False, 'message': 'User not found! Please sign up first.'})
+
+        stored_face = user[1]
+        if not stored_face:
+            return jsonify({'success': False, 'message': 'No face data found for this user.'})
+
+        from ai_detector import detect_ai_face
+
+        result = detect_ai_face(face_data)
+        if result['is_ai_generated']:
+            return jsonify({'success': False, 'message': 'AI-generated face not allowed! Please use a real face.'})
+
+        session['user_logged_in'] = True
+        session['username'] = username
+
+        global CURRENT_USERID
+        CURRENT_USERID = username
+
+        return jsonify({'success': True, 'message': 'Login successful!', 'redirect': '/dashboard'})
+
+    except Exception as e:
+        print(f"Signin error: {e}")
+        return jsonify({'success': False, 'message': str(e)})
+
+@app.route('/attendance-all')
+def attendance_all():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('SELECT id, userid, date, status, last_updated, is_locked FROM attendance ORDER BY date DESC, id DESC LIMIT 100')
+    rows = c.fetchall()
+    conn.close()
+    html = '<!DOCTYPE html><html><head><title>Attendance Records</title><style>body{font-family:Arial;margin:40px;background:#f5f5f5;}table{width:100%;border-collapse:collapse;background:white;box-shadow:0 4px 12px rgba(0,0,0,0.1);}th,td{padding:12px;text-align:left;border-bottom:1px solid #eee;}th{background:linear-gradient(135deg,#28a745,#20c997);color:white;}.present{background:#d4edda;}.absent{background:#f8d7da;}.locked{background:#fff3cd;}</style></head><body>'
+    html += '<h2>📋 All Attendance Records</h2>'
+    html += '<table><tr><th>ID</th><th>User</th><th>Date</th><th>Status</th><th>Time</th><th>Lock</th></tr>'
+    for r in rows:
+        status_class = 'present' if r[3] == 'Present' else 'absent'
+        lock = '🔒 LOCKED' if r[5] else ''
+        html += f'<tr class="{status_class}"><td>{r[0]}</td><td>{r[1]}</td><td>{r[2]}</td><td>{r[3]}</td><td>{r[4][11:]}</td><td>{lock}</td></tr>'
+    return html
+
+
+@app.route('/send-otp', methods=['POST'])
+def send_otp():
+    # ✅ SAFE WAY - Check if form data exists first
+    if not request.form:
+        return jsonify({
+            'success': False, 
+            'message': '❌ No form data received!'
+        }), 400
+    
+    email = request.form.get("email")
+    
+    # ✅ NULL CHECK BEFORE STRIP
+    if not email:  # None, empty string, or whitespace
+        return jsonify({
+            'success': False, 
+            'message': '❌ Please enter your email address!'
+        }), 400
+    
+    email = email.strip()
+    
+    if '@' not in email or not email.endswith(('.com', '.in', '.org', '.edu')):
+        return jsonify({
+            'success': False, 
+            'message': '❌ Please enter a valid email!'
+        }), 400
+    
+    # Generate OTP
+    otp = generate_otp()
+    
+    # Store safely
+    session['otp'] = otp
+    session['email'] = email
+    session['otp_time'] = time.time()
+    session['otp_attempts'] = 0
+
+    username = email.split("@")[0]
+    # session['username']=username
+    global CURRENT_USERID
+    CURRENT_USERID=username
+    
+    print(f"🔢 Generated OTP: {otp} for {email}")
+    
+    # Send email
+    if send_otp_email(email, otp):
+        return jsonify({
+            'success': True, 
+            'message': f'✅ OTP sent to {email}! Check inbox/spam.',
+            'redirect': '/otp'
+        })
+    else:
+        session.clear()  # Clean up on failure
+        return jsonify({
+            'success': False, 
+            'message': '❌ Email failed. Check Gmail App Password!'
+        }), 500
+
+@app.route('/verify-otp', methods=['POST'])
+def verify_otp():
+    # Check if form data exists
+    if not request.form:
+        return jsonify({
+            'success': False, 
+            'message': '❌ No form data received!'
+        }), 400
+    
+    # Get and validate OTP
+    user_otp = request.form.get("otp")
+    if not user_otp:
+        return jsonify({
+            'success': False, 
+            'message': '❌ Please enter OTP!'
+        }), 400
+    
+    user_otp = user_otp.strip()
+    if len(user_otp) != 6 or not user_otp.isdigit():
+        return jsonify({
+            'success': False, 
+            'message': '❌ OTP must be 6 digits!'
+        }), 400
+    
+    # Get stored data
+    email = session.get('email')
+    stored_otp = session.get('otp')
+    
+    if not email or not stored_otp:
+        return jsonify({
+            'success': False, 
+            'message': '❌ Session expired. Please resend OTP!'
+        }), 400
+    
+    # Check expiration (5 minutes = 300 seconds)
+    otp_age = time.time() - session.get('otp_time', 0)
+    attempts = session.get('otp_attempts', 0)
+    
+    if otp_age > 300:
+        session.clear()
+        return jsonify({
+            'success': False, 
+            'message': '⏰ OTP expired! Click RESEND.',
+            'expired': True
+        }), 400
+    
+    if attempts >= 3:
+        session.clear()
+        return jsonify({
+            'success': False, 
+            'message': '❌ Too many failed attempts!'
+        }), 400
+    
+    # ✅ SUCCESS CHECK
+    if user_otp == stored_otp:
+        session['otp_verified'] = True
+        session['verified_email'] = email
+        session['login_time'] = time.time()
+        
+        # Clean up
+        session.pop('otp', None)
+        session.pop('otp_time', None)
+        session.pop('otp_attempts', None)
+        
+        print(f"✅ OTP verified for {email}")
+        return jsonify({
+            'success': True, 
+            'message': '🎉 Verification successful!',
+            'redirect': '/dashboard'
+        })
+    
+    # ❌ FAILED ATTEMPT
+    attempts += 1
+    session['otp_attempts'] = attempts
+    remaining = 3 - attempts
+    
+    return jsonify({
+        'success': False, 
+        'message': f'❌ Wrong OTP! {remaining} attempts left.',
+        'attempts_left': remaining
+    })
+
+# ADD THIS MISSING resend_otp ROUTE
+@app.route('/resend-otp', methods=['POST'])
+def resend_otp():
+    if not request.form:
+        return jsonify({'success': False, 'message': '❌ No form data!'}), 400
+    
+    email = request.form.get('email') or session.get('email')
+    if not email:
+        return jsonify({'success': False, 'message': '❌ No email found!'}), 400
+    
+    # Clear old data
+    session.pop('otp', None)
+    session.pop('otp_time', None)
+    session.pop('otp_attempts', None)
+    
+    # Generate new OTP
+    otp = generate_otp()
+    session['otp'] = otp
+    session['email'] = email
+    session['otp_time'] = time.time()
+    session['otp_attempts'] = 0
+    
+    
+    print(f"🔄 RESENT OTP: {otp} for {email}")
+    
+    if send_otp_email(email, otp):
+        return jsonify({
+            'success': True, 
+            'message': f'✅ New OTP sent to {email}!',
+            'redirect': '/otp'
+        })
+    else:
+        return jsonify({
+            'success': False, 
+            'message': '❌ Failed to send OTP!'
+        }), 500
+
+
+@app.route('/dashboard')
+def dashboard():
+    if not session.get('otp_verified') and not session.get('user_logged_in'):
+        return redirect('/login')
+    return render_template('index.html')
+
+# WebRTC: Client sends detection data via Socket.IO
+@socketio.on('detection_data')
+def handle_detection_data(data):
+    global face_detected, expression, gesture, attendance_status, present_count, absent_count
+
+    # Update from client detection
+    face_detected = data.get('face_detected', False)
+    client_expression = data.get('expression', 'neutral')
+    client_gesture = data.get('gesture', 'none')
+
+    # Update expression with emoji if changed
+    if client_expression == 'Happy':
+        expression = 'Happy 😊'
+    elif client_expression == 'Surprised':
+        expression = 'Surprised 😲'
+    elif client_expression == 'Neutral':
+        expression = 'Neutral 😐'
+    else:
+        expression = client_expression
+
+    gesture = client_gesture
+
+    # Attendance logic
+    new_status = "Present" if face_detected else "Absent"
+
+    if new_status == "Present":
+        present_count += 1
+    else:
+        absent_count += 1
+
+    if absent_count >= 5000 and attendance_status != LOCKED_ABSENT:
+        set_attendance(CURRENT_USERID, "Absent")
+        attendance_status = LOCKED_ABSENT
+    elif new_status != attendance_status and attendance_status != LOCKED_ABSENT:
+        updated = set_attendance(CURRENT_USERID, new_status)
+        if updated:
+            attendance_status = new_status
+
+# WebRTC: Client sends speech recognition results via Socket.IO
+@socketio.on('speech_result')
+def handle_speech_result(data):
+    global current_speech_text
+    text = data.get('text', '')
+    if text:
+        current_speech_text = text
+        save_speech_record(CURRENT_USERID or "student1", text)
+
+# WebRTC: Client speech toggle
+@socketio.on('speech_toggle')
+def handle_speech_toggle(data):
+    global is_listening
+    is_listening = data.get('listening', False)
+
+@app.route('/status')
+def status():
+    present, absent, locked = get_attendance_counts(CURRENT_USERID)
+    return jsonify({
+        'face': face_detected,
+        'expression': expression,
+        'gesture': gesture,
+        'filter': current_filter,
+        'attendance': attendance_status,
+        'speech': current_speech_text,
+        'listening': is_listening,
+        'user': CURRENT_USERID,
+        'present_count': present_count,
+        'absent_count': absent_count,
+        'total_present': present,
+        'total_absent': absent,
+        'locked': locked > 0,
+        'verified': session.get('otp_verified', False)
+    })
+
+@app.route('/logout')
+def logout():
+    session.clear()
+    return redirect('/login')
+
+# Other routes unchanged...
+@app.route('/toggle-speech', methods=['POST'])
+def toggle_speech():
+    global is_listening
+    is_listening = not is_listening
+    print(f"Speech listening: {'ON' if is_listening else 'OFF'}")
+    return jsonify({'listening': is_listening})
+
+@app.route('/filter/<name>')
+def set_filter(name):
+    global current_filter
+    if name in filters:
+        current_filter = name
+    return jsonify({'filter': current_filter})
+
+@app.route('/speech-records')
+def speech_records():
+    conn = sqlite3.connect(SPEECH_DB_PATH)
+    c = conn.cursor()
+    c.execute('SELECT id, date, time, text_content FROM speech_records ORDER BY id DESC LIMIT 50')
+    rows = c.fetchall()
+    conn.close()
+    # HTML table generation (unchanged)
+    html = '<!DOCTYPE html><html><head><title>Speech Records</title><style>body{font-family:Arial;margin:40px;background:#f5f5f5;}table{width:100%;border-collapse:collapse;background:white;box-shadow:0 4px 12px rgba(0,0,0,0.1);}th,td{padding:12px;text-align:left;border-bottom:1px solid #eee;}th{background:linear-gradient(135deg,#007bff,#0056b3);color:white;}</style></head><body>'
+    html += '<h2>🎤 Speech Records (Last 50)</h2>'
+    html += '<table><tr><th>ID</th><th>Date</th><th>Time</th><th>Text</th></tr>'
+    for r in rows:
+        html += f'<tr><td>{r[0]}</td><td>{r[1]}</td><td>{r[2]}</td><td>{r[3][:80]}...</td></tr>'
+    html += '</table></body></html>'
+    return html
+
+@socketio.on('message')
+def handle_message(data):
+    user_message = data['message']
+    
+    if not client:
+        emit('response', {'message': "Groq AI is disabled: GROQ_API_KEY environment variable is not configured."})
+        return
+
+    # Context string you already have in your app.py
+    context = f"""
+    You are an AI Attendance Assistant.
+    Attendance: {attendance_status}
+    Present count: {present_count}
+    Absent count: {absent_count}
+    Gesture: {gesture}
+    Expression: {expression}
+    Speech: {current_speech_text}
+    """
+    
+    try:
+        # Groq API Call for ultra-fast response
+        completion = client.chat.completions.create(
+            model="llama-3.1-8b-instant",  # Fastest model for <1s responses
+            messages=[
+                {"role": "system", "content": context},
+                {"role": "user", "content": user_message}
+            ],
+            stream=False # Set to True if you want a typing effect
+        )
+        
+        reply = completion.choices[0].message.content
+        emit('response', {'message': reply})
+        
+    except Exception as e:
+        emit('response', {'message': f"Groq AI error: {e}"})
+
+if __name__ == '__main__':
+    speech_thread = threading.Thread(target=speech_listener, daemon=True)
+    speech_thread.start()
+    print("🚀 Smart Attendance System with OTP Started!")
+    print("📧 Update OTP_SENDER_EMAIL and OTP_SENDER_PASSWORD first!")
+    print("🌐 Login: http://localhost:5000/login")
+    socketio.run(app, debug=True, host='0.0.0.0', port=5000, allow_unsafe_werkzeug=True)
