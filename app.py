@@ -204,13 +204,11 @@ def index():
 
 @app.route('/login')
 def login_page():
-    return render_template('middle_page.html')
+    return redirect('/dashboard')
 
 @app.route('/otp')
 def otp_page():
-    if 'otp_verified' not in session:
-        return render_template('otp_page.html', error="Please enter your email first!")
-    return render_template('otp_page.html')
+    return redirect('/dashboard')
 
 @app.route('/attendance-all')
 def attendance_all():
