@@ -1,3 +1,9 @@
+try:
+    import eventlet
+    eventlet.monkey_patch()
+except ImportError:
+    pass
+
 from flask import Flask, render_template, Response, jsonify, request, session, redirect, url_for
 import os
 import logging
