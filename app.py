@@ -45,8 +45,8 @@ socketio = SocketIO(app, cors_allowed_origins="*")
 DB_PATH = 'attendance.db'
 SPEECH_DB_PATH = 'speech.db'
 
-OTP_SENDER_EMAIL = os.environ.get("OTP_SENDER_EMAIL", "smartwebcam1014@gmail.com")  # Gmail
-OTP_SENDER_PASSWORD = os.environ.get("OTP_SENDER_PASSWORD", "sgnrzfylsoxbtiib")  # Gmail App Password
+OTP_SENDER_EMAIL = os.environ.get("OTP_SENDER_EMAIL", "neelkhatwala9@gmail.com")  # Gmail
+OTP_SENDER_PASSWORD = os.environ.get("OTP_SENDER_PASSWORD", "tzpa zsxq anjo duby")  # Gmail App Password
 
 speech_queue = queue.Queue()
 is_listening = False
