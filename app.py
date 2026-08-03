@@ -425,8 +425,8 @@ def resend_otp():
 
 @app.route('/dashboard')
 def dashboard():
-    if not session.get('otp_verified'):
-        return redirect('/login')
+    # if not session.get('otp_verified'):
+    #     return redirect('/login')
     return render_template('index.html')
 
 # WebRTC: Client sends detection data via Socket.IO
