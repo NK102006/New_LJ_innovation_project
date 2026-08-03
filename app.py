@@ -44,7 +44,6 @@ socketio = SocketIO(app, cors_allowed_origins="*")
 
 DB_PATH = 'attendance.db'
 SPEECH_DB_PATH = 'speech.db'
-USERS_DB_PATH = 'users.db'
 
 OTP_SENDER_EMAIL = os.environ.get("OTP_SENDER_EMAIL", "smartwebcam1014@gmail.com")  # Gmail
 OTP_SENDER_PASSWORD = os.environ.get("OTP_SENDER_PASSWORD", "sgnrzfylsoxbtiib")  # Gmail App Password
@@ -86,21 +85,7 @@ def init_speech_db():
     conn.commit()
     conn.close()
 
-def init_users_db():
-    conn = sqlite3.connect(USERS_DB_PATH)
-    c = conn.cursor()
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE NOT NULL,
-            password_hash TEXT NOT NULL,
-            email TEXT NOT NULL,
-            face_data TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    conn.commit()
-    conn.close()
+
 
 def set_attendance(userid, status):
     today_str = date.today().isoformat()
@@ -202,7 +187,6 @@ def speech_listener():
 # Initialize databases
 init_db()
 init_speech_db()
-init_users_db()
 
 # Global state (updated via Socket.IO from client)
 face_detected = False
@@ -220,111 +204,13 @@ def index():
 
 @app.route('/login')
 def login_page():
-    return render_template('login.html')
+    return render_template('middle_page.html')
 
 @app.route('/otp')
 def otp_page():
     if 'otp_verified' not in session:
         return render_template('otp_page.html', error="Please enter your email first!")
     return render_template('otp_page.html')
-
-
-# New Face Login Routes
-@app.route('/detect-face', methods=['POST'])
-def detect_face():
-    try:
-        data = request.get_json()
-        image_data = data.get('image', '')
-
-        if not image_data:
-            return jsonify({'detected': False, 'message': 'No image provided'})
-
-        from ai_detector import detect_ai_face
-
-        result = detect_ai_face(image_data)
-
-        return jsonify({
-            'detected': True,
-            'is_ai_generated': result['is_ai_generated'],
-            'confidence': result['confidence'],
-            'message': 'AI-generated face detected' if result['is_ai_generated'] else 'Real face detected'
-        })
-
-    except Exception as e:
-        print(f"Face detection error: {e}")
-        return jsonify({'detected': False, 'message': str(e)})
-
-
-@app.route('/signup', methods=['POST'])
-def signup():
-    try:
-        username = request.form.get('username')
-        email = request.form.get('email')
-        password = request.form.get('password')
-        face_data = request.form.get('face_data')
-
-        if not all([username, email, password, face_data]):
-            return jsonify({'success': False, 'message': 'All fields are required'})
-
-        password_hash = hashlib.sha256(password.encode()).hexdigest()
-
-        conn = sqlite3.connect(USERS_DB_PATH)
-        c = conn.cursor()
-
-        try:
-            c.execute('INSERT INTO users (username, password_hash, email, face_data) VALUES (?, ?, ?, ?)',
-                     (username, password_hash, email, face_data))
-            conn.commit()
-            conn.close()
-            return jsonify({'success': True, 'message': 'Account created successfully!'})
-        except sqlite3.IntegrityError:
-            conn.close()
-            return jsonify({'success': False, 'message': 'Username already exists!'})
-
-    except Exception as e:
-        print(f"Signup error: {e}")
-        return jsonify({'success': False, 'message': str(e)})
-
-
-@app.route('/signin', methods=['POST'])
-def signin():
-    try:
-        username = request.form.get('username')
-        face_data = request.form.get('face_data')
-
-        if not username or not face_data:
-            return jsonify({'success': False, 'message': 'Username and face capture required'})
-
-        conn = sqlite3.connect(USERS_DB_PATH)
-        c = conn.cursor()
-        c.execute('SELECT id, face_data FROM users WHERE username = ?', (username,))
-        user = c.fetchone()
-        conn.close()
-
-        if not user:
-            return jsonify({'success': False, 'message': 'User not found! Please sign up first.'})
-
-        stored_face = user[1]
-        if not stored_face:
-            return jsonify({'success': False, 'message': 'No face data found for this user.'})
-
-        from ai_detector import detect_ai_face
-
-        result = detect_ai_face(face_data)
-        if result['is_ai_generated']:
-            return jsonify({'success': False, 'message': 'AI-generated face not allowed! Please use a real face.'})
-
-        session['user_logged_in'] = True
-        session['username'] = username
-
-        global CURRENT_USERID
-        CURRENT_USERID = username
-
-        return jsonify({'success': True, 'message': 'Login successful!', 'redirect': '/dashboard'})
-
-    except Exception as e:
-        print(f"Signin error: {e}")
-        return jsonify({'success': False, 'message': str(e)})
 
 @app.route('/attendance-all')
 def attendance_all():
@@ -521,7 +407,7 @@ def resend_otp():
 
 @app.route('/dashboard')
 def dashboard():
-    if not session.get('otp_verified') and not session.get('user_logged_in'):
+    if not session.get('otp_verified'):
         return redirect('/login')
     return render_template('index.html')
 
