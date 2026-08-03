@@ -158,6 +158,12 @@ button:disabled{ opacity:.6; cursor:not-allowed; }
         Sent to: {{ session.get('email', 'your email') }}
     </div>
 
+    {% if session.get('smtp_failed') %}
+    <div class="message warning" style="font-size: 14px; text-align: center; margin-top: 10px; margin-bottom: 15px;">
+        ⚠️ SMTP email delivery failed (blocked port). Please retrieve your OTP from the terminal or Render dashboard logs.
+    </div>
+    {% endif %}
+
     <form id="otpForm">
 
         <input

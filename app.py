@@ -269,21 +269,29 @@ def send_otp():
     global CURRENT_USERID
     CURRENT_USERID=username
     
-    print(f"🔢 Generated OTP: {otp} for {email}")
+    print("\n" + "="*50)
+    print(f"🔑 [OTP LOG] Code for {email} is: {otp}")
+    print("="*50 + "\n")
     
     # Send email
     if send_otp_email(email, otp):
+        session['smtp_failed'] = False
         return jsonify({
             'success': True, 
             'message': f'✅ OTP sent to {email}! Check inbox/spam.',
             'redirect': '/otp'
         })
     else:
-        session.clear()  # Clean up on failure
+        # SMTP failed (e.g. blocked ports on Render), fall back to log retrieval
+        session['smtp_failed'] = True
+        print("\n" + "!"*50)
+        print(f"⚠️ SMTP SEND FAILURE FOR {email}. Fallback OTP code is: {otp}")
+        print("!"*50 + "\n")
         return jsonify({
-            'success': False, 
-            'message': '❌ Email failed. Check Gmail App Password!'
-        }), 500
+            'success': True, 
+            'message': '⚠️ SMTP blocked (Render Free Tier). Check your terminal console or Render Logs for the OTP!',
+            'redirect': '/otp'
+        })
 
 @app.route('/verify-otp', methods=['POST'])
 def verify_otp():
@@ -348,6 +356,7 @@ def verify_otp():
         session.pop('otp', None)
         session.pop('otp_time', None)
         session.pop('otp_attempts', None)
+        session.pop('smtp_failed', None)
         
         print(f"✅ OTP verified for {email}")
         return jsonify({
@@ -390,19 +399,28 @@ def resend_otp():
     session['otp_attempts'] = 0
     
     
-    print(f"🔄 RESENT OTP: {otp} for {email}")
+    print("\n" + "="*50)
+    print(f"🔄 [RESENT OTP LOG] Code for {email} is: {otp}")
+    print("="*50 + "\n")
     
     if send_otp_email(email, otp):
+        session['smtp_failed'] = False
         return jsonify({
             'success': True, 
             'message': f'✅ New OTP sent to {email}!',
             'redirect': '/otp'
         })
     else:
+        # SMTP failed, fall back to log retrieval
+        session['smtp_failed'] = True
+        print("\n" + "!"*50)
+        print(f"⚠️ SMTP RESEND FAILURE FOR {email}. Fallback OTP code is: {otp}")
+        print("!"*50 + "\n")
         return jsonify({
-            'success': False, 
-            'message': '❌ Failed to send OTP!'
-        }), 500
+            'success': True, 
+            'message': '⚠️ SMTP blocked. Check your terminal or Render Logs for the resent OTP!',
+            'redirect': '/otp'
+        })
 
 
 @app.route('/dashboard')
