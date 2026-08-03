@@ -256,7 +256,26 @@ function switchTab(tab){
 async function startWebcam(videoId){
     const video = document.getElementById(videoId);
     try{
-        const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+        let stream;
+        try {
+            const devices = await navigator.mediaDevices.enumerateDevices();
+            const videoDevices = devices.filter(device => device.kind === 'videoinput');
+            let targetDeviceId = null;
+            if (videoDevices.length > 1) {
+                const keywords = ['integrated', 'built-in', 'inbuilt', 'front', 'facetime', 'webcam', 'internal', 'hd camera'];
+                for (const device of videoDevices) {
+                    const label = device.label.toLowerCase();
+                    if (keywords.some(k => label.includes(k))) {
+                        targetDeviceId = device.deviceId;
+                        break;
+                    }
+                }
+            }
+            const constraints = { video: targetDeviceId ? { deviceId: { exact: targetDeviceId } } : true };
+            stream = await navigator.mediaDevices.getUserMedia(constraints);
+        } catch (e) {
+            stream = await navigator.mediaDevices.getUserMedia({ video: true });
+        }
         video.srcObject = stream;
         currentStream = stream;
     }catch(err){

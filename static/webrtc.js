@@ -250,9 +250,29 @@ const filters = {
 // Initialize everything
 async function initCamera() {
     try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-            video: { width: 640, height: 480, facingMode: 'user' }
-        });
+        let stream;
+        const baseConstraints = { video: { width: 640, height: 480, facingMode: 'user' } };
+        try {
+            const devices = await navigator.mediaDevices.enumerateDevices();
+            const videoDevices = devices.filter(device => device.kind === 'videoinput');
+            let targetDeviceId = null;
+            if (videoDevices.length > 1) {
+                const keywords = ['integrated', 'built-in', 'inbuilt', 'front', 'facetime', 'webcam', 'internal', 'hd camera'];
+                for (const device of videoDevices) {
+                    const label = device.label.toLowerCase();
+                    if (keywords.some(k => label.includes(k))) {
+                        targetDeviceId = device.deviceId;
+                        break;
+                    }
+                }
+            }
+            if (targetDeviceId) {
+                baseConstraints.video.deviceId = { exact: targetDeviceId };
+            }
+            stream = await navigator.mediaDevices.getUserMedia(baseConstraints);
+        } catch (e) {
+            stream = await navigator.mediaDevices.getUserMedia(baseConstraints);
+        }
 
         videoElement.srcObject = stream;
         await videoElement.play();
