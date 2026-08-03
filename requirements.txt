@@ -9,6 +9,6 @@ onnxruntime
 Pillow
 numpy
 SpeechRecognition
-eventlet==0.33.3
+eventlet
 standard-aifc; python_version >= "3.13"
 audioop-lts; python_version >= "3.13"
